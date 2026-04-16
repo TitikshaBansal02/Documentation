@@ -60,9 +60,9 @@ Branch, Type, Status, Started, Last Updated
 ## 📚 Index
  
 ### ✨ Features
-| Title | Branch | Status |
-|-------|--------|--------|
-| — | — | — |
+| Title | Branch | Started | Status |
+|-------|--------|---------|--------|
+| [Independent Fallback Adapter Chains (LLM / TTS / STT)](./features/model-fallback-feature.md) | Titiksha/model-fallback-clean · Titiksha/model-fallback | 2026-04-15 | Completed |
  
 ### 🐛 Bug Fixes
 | Title | Branch | Started | Status |
@@ -86,9 +86,9 @@ Branch, Type, Status, Started, Last Updated
  
 ## 🏢 Context
  
-**Company:** RevRAG.ai  
-**Role:** *(your role here)*  
-**Duration:** *(start date – present)*
+**Company:** revrag.ai  
+**Role:** *SDE Intern*  
+**Duration:** *19 March, 2026 – present*
  
 ---
  
