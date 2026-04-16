@@ -16,18 +16,38 @@ The goal is to maintain a clear, honest, and detailed log that captures:
 - **What** the outcome was
 ---
  
+## 🗂️ Structure
+ 
+```
+/
+├── README.md               ← You are here
+├── features/               ← New feature documentation
+│   └── <title>.md
+├── bugfixes/               ← Bug investigation & fix docs
+│   └── <title>.md
+└── optimizations/          ← Performance & refactor docs
+    └── <title>.md
+```
+ 
+Each file is named by a short descriptive title. The branch name, date, and full context live inside the document.
+ 
+---
+ 
 ## 📋 Documentation Format
  
 Every entry follows a consistent structure:
  
 ```
 # [Type] Title
-Branch: <branch-name>
-Status: In Progress | Completed
-Last Updated: <date>
+ 
+| Field | Details |
+Branch, Type, Status, Started, Last Updated
  
 ## Overview
 ## Background / Context
+## Call Flow Analysis / Root Cause
+## Identified Delay Sources / Bug Details
+## Open Questions
 ## Approach
 ## Implementation Details
 ## Testing
@@ -40,37 +60,35 @@ Last Updated: <date>
 ## 📚 Index
  
 ### ✨ Features
-| Branch | Title | Status |
-|--------|-------|--------|
+| Title | Branch | Status |
+|-------|--------|--------|
 | — | — | — |
  
 ### 🐛 Bug Fixes
-| Branch | Title | Status |
-|--------|-------|--------|
-| — | — | — |
+| Title | Branch | Started | Status |
+|-------|--------|---------|--------|
+| [Call History Duration Filter Empties Table](./bugfixes/call-history-duration-filter-bug.md) | bug-fix | 2026-04-16 | Completed |
  
 ### ⚡ Optimizations
-| Branch | Title | Status |
-|--------|-------|--------|
-| — | — | — |
- 
-> The index will be updated as new entries are added.
+| Title | Branch | Started | Status |
+|-------|--------|---------|--------|
+| [Reduce Caller Wait Time](./optimizations/caller-wait-time-optimization.md) | Titiksha/agent-start-optimization | 2026-04-16 | In Progress |
  
 ---
  
 ## 🔄 Workflow
  
-1. **Start of work** — Create a new `.md` file under the relevant folder, named after the branch.
-2. **During work** — Update the file as decisions are made, blockers hit, and progress is made.
+1. **Start of work** — Create a new `.md` file under the relevant folder, named by a short descriptive title.
+2. **During work** — Update the file as decisions are made, blockers are hit, and progress is made.
 3. **On completion** — Finalize the doc with outcomes, results, and any retrospective notes.
-4. **Update index** — Add the entry to the table above with status marked as `Completed`.
+4. **Update index** — Add/update the entry in the table above with status marked as `Completed`.
 ---
  
 ## 🏢 Context
  
-**Company:** revrag.ai  
-**Role:** *SDE Intern*  
-**Duration:** *(March 2026 – present)*
+**Company:** RevRAG.ai  
+**Role:** *(your role here)*  
+**Duration:** *(start date – present)*
  
 ---
  
