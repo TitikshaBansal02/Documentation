@@ -6,7 +6,7 @@
 | **Type**     | Optimization                         |
 | **Status**   | In Progress                          |
 | **Started**  | 2026-04-16                           |
-| **Last Updated** | 2026-04-16                       |
+| **Last Updated** | 2026-04-16 (optimization plan added) |
  
 ---
  
@@ -207,21 +207,86 @@ Every call type shares a common setup pipeline (`create_call_log_and_get_config`
  
 ## Approach
  
-> _To be filled once open questions above are validated._
+Optimizations are grouped into three tiers by effort and risk. Execution order follows the suggested sequence at the bottom.
  
-Planned grouping:
+---
  
-**Easy wins (low risk, high impact):**
-- Parallelize LLM/STT/TTS config DB queries with `asyncio.gather`
-- Remove redundant `list_dispatch` debug RPC (outbound)
-- Cache system prompt file in memory (not re-read from disk per call)
-- Eliminate S3 round-trip: pass config via Redis or inline metadata instead of S3 PUT → worker S3 GET
-- Fix duplicate `fetch_agent_data_for_call` in inbound concurrency check
-**Structural (higher effort):**
-- Pre-bake inbound `CallConfigData` into Redis at phone-number-assign time
-- Pool STT/TTS/LLM clients across calls
-- Move welcome-audio queuing before `wait_for_participant`
-- Convert 12-hr presigned URL to a short-TTL or eliminate entirely
+### Tier 1 — Easy Wins
+> Pure refactors, no behavior change. Target: land in one PR.
+ 
+| # | Change | Location | Sources Fixed | Estimated Save |
+|---|--------|----------|---------------|----------------|
+| 1.1 | Parallelise LLM/STT/TTS config DB calls with `asyncio.gather` | `call_service.py:375–379` | #7, #8, #9 | 80–150ms (all flows) |
+| 1.2 | Merge config-detail queries into one JOIN | `get_tts_config_details` et al. | #7, #8, #9 | 60–120ms (all flows) |
+| 1.3 | Drop redundant `list_dispatch` debug RPC | `call_service.py:1236` | #19 | 30–100ms (outbound) |
+| 1.4 | Eliminate S3 round-trip — store config in Redis at `{room_name}` with 1hr TTL; keep S3 upload as async fire-and-forget for audit | `call_service.py`, `pipeline_service.py:1631` | #14, #15, #23 | 150–500ms (all flows) |
+| 1.5 | Shrink presigned URL TTL from 12hr → 5min | S3 presign call | #15 | 10–30ms (marginal) |
+| 1.6 | Cache system prompt at module scope (read once at import) | `pipeline_agent.py:33` | #32 | 2–15ms + removes disk I/O from critical path |
+| 1.7 | Kill duplicate `fetch_agent_data_for_call` in inbound concurrency check — pass agent forward instead | `_check_inbound_org_concurrency` | #22 | 30–80ms (inbound) |
+| 1.8 | Gate `_handle_previous_outbound_call` behind a flag or run in background after token is returned | embedded flow | #4 | 50–200ms (embedded) |
+ 
+**Tier 1 cumulative impact: ~300–900ms off every call.**
+ 
+---
+ 
+### Tier 2 — Mid Effort
+> Days of work, moderate risk. Run in sequence with measurement between each.
+ 
+| # | Change | Location | Sources Fixed | Estimated Save |
+|---|--------|----------|---------------|----------------|
+| 2.1 | Pre-bake inbound `CallConfigData` at phone-number assign time; store in Redis/S3 by phone number; rebuild on agent edit | `phonenumbers_service.py:287` | #21 | 350ms–1.2s (inbound) |
+| 2.2 | Parallelise STT/TTS/LLM plugin instantiation with `asyncio.gather` | `agent_util.load_agent_session` | #26, #27, #28, #29 | 80–150ms (all flows) |
+| 2.3 | Pool per-worker, per-provider `aiohttp.ClientSession` — reuse TLS connections across calls | STT/TTS/LLM plugin init | #36, #37, #38 | 100–400ms (warm workers) |
+| 2.4 | Add hydration-complete guard before first `search_kb` — `asyncio.wait_for` with short deadline | `hydrate_kb_async` | #6 | No raw latency save, but prevents cold RAG miss on turn 1 |
+| 2.5 | Overlap `wait_for_participant` with agent build — reorder so `load_initial_prompt` + tool wiring run in parallel | `pipeline_service.py` | general | 100–300ms (web/embedded/inbound) |
+| 2.6 | Parallelise embedded auth + workspace + context fetches with `asyncio.gather` | embedded HTTP path | #1, #2, #3 | 120–250ms (embedded) |
+| 2.7 | Move `_upload_call_config_to_s3` to `asyncio.create_task` — remove S3 from critical path entirely | `call_service.py` | #14 | Removes S3 PUT latency from request path |
+ 
+**Tier 2 cumulative: another ~400–1100ms on top of Tier 1.**
+ 
+---
+ 
+### Tier 3 — Structural
+> Week+ effort, higher risk. Prioritize based on instrumentation data after Tier 1+2.
+ 
+| # | Change | Sources Fixed | Notes |
+|---|--------|---------------|-------|
+| 3.1 | Queue welcome TTS synthesis before `wait_for_participant`; buffer frames; publish on participant subscribe | #42 | Shaves entire TTS-time-to-first-audio (~200–600ms) off perceived wait |
+| 3.2 | Force static welcome or pre-generate dynamic welcome in request path (variables already available) | #41 | Eliminates LLM round-trip before first audio (300ms–1s TTFT) |
+| 3.3 | Pre-warm STT/TTS sessions per agent on steady-traffic workers with keepalive pings | #36, #37, #38 | Turns `session.start` into a few-ms attach |
+| 3.4 | Return `room_name` to outbound UI immediately; stream ring/connect events over websocket | #40 | Removes PSTN ring from UI blocking wait |
+| 3.5 | Stop duplicating context into data column in embedded (legacy SDK compat merge) | — | Minor latency, major code-health win |
+| 3.6 | Collapse `create_call_log_and_get_config` into single transactional unit (one SELECT JOIN + one INSERT) | #5, #7, #8, #9 | 80–200ms (all flows) |
+ 
+---
+ 
+### Expected Impact by Flow
+ 
+| Flow | Current | After Tier 1 | After Tier 1+2 | After Tier 1+2+3 |
+|------|---------|--------------|----------------|------------------|
+| Web | 1.2–2.5s | 0.9–1.8s | 0.5–1.2s | 0.3–0.8s |
+| Embedded | 1.5–3.0s | 1.0–2.0s | 0.6–1.3s | 0.4–0.9s |
+| Inbound | 1.8–3.5s | 1.5–3.0s | 0.5–1.0s | 0.3–0.7s |
+| Outbound (excl. ring) | 1.5–3.0s | 1.1–2.2s | 0.6–1.3s | 0.4–0.9s |
+ 
+> Outbound PSTN ring time is carrier-bound and excluded from the budget.
+ 
+---
+ 
+### Execution Order
+ 
+1. Land **1.1, 1.3, 1.6, 1.7** in one PR (pure refactors, no behavior change)
+2. **Instrument** — add `time.perf_counter()` spans around every block in `create_call_log_and_get_config` and `agent_entrypoint`; push to Cekura observability for ground truth
+3. Land **1.4** (Redis-backed config) — measure
+4. Land **2.1** (inbound pre-bake) — measure
+5. Land **2.2, 2.3, 2.5** together (pipeline parallelism + pooling) — measure
+6. Tier 3 based on what instrumentation shows as the remaining tallest bar
+---
+ 
+### Pending Decisions
+ 
+- [ ] **1.4 config transport** — Redis vs inline dispatch metadata? Depends on `CallConfigData` payload size in prod traffic (threshold ~64KB for inline)
+- [ ] **Observability target** — confirm Cekura is the right place for new timing spans
 ---
  
 ## Implementation Details
