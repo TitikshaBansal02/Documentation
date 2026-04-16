@@ -16,23 +16,6 @@ The goal is to maintain a clear, honest, and detailed log that captures:
 - **What** the outcome was
 ---
  
-## 🗂️ Structure
- 
-```
-/
-├── README.md               ← You are here
-├── features/               ← New feature documentation
-│   └── <branch-name>.md
-├── bugfixes/               ← Bug investigation & fix docs
-│   └── <branch-name>.md
-└── optimizations/          ← Performance & refactor docs
-    └── <branch-name>.md
-```
- 
-Each file is named after the **branch** it corresponds to, making it easy to cross-reference with the codebase.
- 
----
- 
 ## 📋 Documentation Format
  
 Every entry follows a consistent structure:
@@ -85,9 +68,9 @@ Last Updated: <date>
  
 ## 🏢 Context
  
-**Company:** RevRAG.ai  
-**Role:** *(your role here)*  
-**Duration:** *(start date – present)*
+**Company:** revrag.ai  
+**Role:** *SDE Intern*  
+**Duration:** *(March 2026 – present)*
  
 ---
  
