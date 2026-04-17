@@ -7,7 +7,7 @@
 | **Type**         | Feature                                              |
 | **Status**       | Completed                                            |
 | **Started**      | 2026-04-08                                           |
-| **Last Updated** | 2026-04-15                                           |
+| **Last Updated** | 2026-04-17 (follow-up fixes added)                   |
  
 ---
  
@@ -256,7 +256,7 @@ The feature is **end-to-end complete** for config and runtime — fallbacks can 
  
 | # | Gap | Severity |
 |---|-----|----------|
-| 1 | `settings` dict inconsistency between migration backfill (step=0.01) and `seed_db.py` inline dicts (step=0.1) — migrated DBs and fresh DBs will show different slider behavior | Medium |
+| 1 | ~~`settings` dict inconsistency between migration backfill and `seed_db.py`~~ — **resolved in follow-up** | ~~Medium~~ |
 | 2 | Adapter Settings UI is LLM-tab-only but applies to all three chains — user on TTS tab has no visibility or control | Medium |
 | 3 | `attempt_timeout` for TTS is silently dropped; no UI warning | Low |
 | 4 | `onGenderChange={() => {}}` no-op in `AdvanceSettingsSection.tsx` and `AdvanceConfigModal.tsx` — gender prop exists but is functionally dead | Low |
@@ -267,3 +267,138 @@ The feature is **end-to-end complete** for config and runtime — fallbacks can 
 | 9 | `vector_store_service.py` empty-embedding guard is collateral — fixes an hnswlib crash but has no test and no issue reference | Low |
 | 10 | `MAX_FALLBACKS=3` enforced only in UI — backend API accepts any list length | Medium |
 | 11 | `FallbackEvents` captured in `MetricsCollection` but no UI surface (call logs / analytics) yet | Medium |
+ 
+---
+ 
+## Follow-up Fixes & Improvements
+ 
+> Same branches: `revrag-core: Titiksha/model-fallback-clean` · `revrag-ui: Titiksha/model-fallback`  
+> Applied after initial feature merge. Includes settings range corrections, data integrity fixes, and a default value change.
+ 
+---
+ 
+### 1. Wrong Slider Ranges (Per-Model Settings)
+ 
+**Problem:** The initial migration seeded settings per-provider (bulk `UPDATE WHERE provider = X`), so every ElevenLabs model got the same `speed: 0.25–4.0` range. The ElevenLabs API rejects speed outside `[0.7, 1.2]` for all non-v3 models — calls with speed > 1.2 crashed with a TTS error. The same pattern of per-provider-instead-of-per-model caused wrong ranges across Cartesia, Sarvam, and OpenAI as well.
+ 
+**Root cause:** Architecture was per-provider not per-model. Same provider, different models, different valid ranges — this wasn't representable.
+ 
+**Audit findings across all providers:**
+ 
+| Provider | Parameter | Issue |
+|----------|-----------|-------|
+| ElevenLabs (non-v3) | `speed` | Was `0.25–4.0`; correct range is `0.7–1.2`. Only `eleven_v3` family supports the wider range |
+| ElevenLabs | `style` | Defined in migration but not exposed in `getTTSParams` — orphaned, never shown |
+| ElevenLabs | `stability` default | Was `0.5`; should be `0.75` to match the code fallback in `models_util.py:507` |
+| ElevenLabs | `temperature` | Legacy alias for `style` — drop it, expose `style` directly |
+| Cartesia | `volume` | `sonic-2` had no volume in migration; prod DB had it and it was working — restored |
+| Sarvam | `pitch` | Was `-20..20` (Sarvam-native scale); UI should show `-1..1` (server maps to native) |
+| Sarvam | `temperature` | Existed on `bulbul:v2`; only valid on v3/v3-beta — removed from v2 |
+| Google TTS | `speed` | Was `0.25–4.0`; UI should show `0.5–2.0` (server maps up) |
+| OpenAI | `reasoning_effort` | Showed on `gpt-4o` / `gpt-4.1` — OpenAI API rejects it on non-gpt-5/o1/o3 models |
+| Gemini | `reasoning_effort` | Kept — maps to `thinking_budget` via LiveKit plugin |
+ 
+**Fix:** Switched from per-provider to per-model settings. New migration `c4d5e6f7a8b9` replaces the bulk provider `UPDATE` with per-`model_id` `UPDATE`s. `seed_db.py` updated to match, eliminating the step/default inconsistency from gap #1.
+ 
+**Files changed:**
+- `alembic/versions/c4d5e6f7a8b9_per_model_settings_for_llm_tts.py` (new, consolidated migration — see below)
+- `scripts/seed_db.py` — `LLM_SETTINGS_BY_MODEL_ID` and `TTS_SETTINGS_BY_MODEL_ID` dicts replace the old per-provider maps; stability default corrected to `0.75`
+**UI fix:** `model-capabilities.ts` — `getTTSParams` now returns `style` and `loudness`. `FallbacksContent.tsx` — Style and Loudness sliders added; `temperature` removed from TTS fallback defaults; both sliders reset to `settings.default` on model change.
+ 
+---
+ 
+### 2. ElevenLabs Speed Safety Clamp (Backend)
+ 
+**Problem:** Even after the catalog fix, agents that had already saved an out-of-range speed (e.g. `1.5`) would still crash on the next call until they updated their config.
+ 
+**Fix:** Added a runtime clamp in `models_util.py` `get_tts_model()`. Before passing speed to the ElevenLabs plugin:
+- Detects model family: `"v3" in model_id` → allowed range `[0.25, 4.0]`; all others → `[0.7, 1.2]`
+- Clamps `speed` to the allowed range and logs a warning with the original and clamped values
+- Acts as permanent defense-in-depth so future out-of-range values never crash the pipeline
+---
+ 
+### 3. STT Cross-Provider Model Bleed (`_resolve_stt_model`)
+ 
+**Incident:** Agent `8cfca55f` (`Inprime_PostDD_collection_More_Then7Days__Kannada_Advanced_Gemini`) had `provider=sarvam` with `model=nova-3` (a Deepgram model). Sarvam's API returned HTTP 400 on every recognize call → STT stream-adapter gave up after 3 retries → session closed → 54-second dead call.
+ 
+**Fix:** New `_resolve_stt_model(provider, requested)` helper in `models_util.py`:
+- Maintains a `_STT_VALID_MODELS` whitelist per provider
+- If `requested` is not in the provider's whitelist, logs a warning and returns the provider's safe default
+- All four STT branches (deepgram, sarvam, google, elevenlabs) route through it
+**Whitelist:**
+ 
+| Provider | Valid models |
+|----------|-------------|
+| deepgram | `nova-2`, `nova-3`, `flux-general-en`, `flux-general-multi` |
+| sarvam | `saarika:v1/v2/v2.5/flash`, `saaras:v2.5/v3/v3-realtime` |
+| google | `long`, `telephony`, `chirp`, `chirp_2` |
+| elevenlabs | `scribe_v1`, `scribe_v2`, `scribe_v2_realtime` |
+ 
+---
+ 
+### 4. `ignore_interruption_turns` Default Changed: `0` → `1`
+ 
+**Change:** The number of initial agent turns during which user interruptions are suppressed now defaults to `1` instead of `0`.
+ 
+**Rationale:** Agents were being interrupted on their very first utterance (the welcome message). Defaulting to `1` gives the agent one clean turn before interruptions are allowed.
+ 
+**Files changed (both repos):**
+ 
+| File | Change |
+|------|--------|
+| `app/models/agents/agent/agent.py:709` | `Optional[int] = 1` |
+| `app/models/agents/agent/agent.py:792` | Schema example updated |
+| `app/modules/pipeline/schema/pipeline_schema.py:67` | Runtime default `= 1` |
+| `app/modules/pipeline/util/agent_util.py:531` | `getattr(..., 1)` + explicit `None` → `1` guard |
+| `app/modules/agents/agent/service/agent_service.py:899` | Service-layer fallback updated |
+| `AdvanceSettingsSection.tsx:351` | `?? 1` |
+| `AdvanceConfigModal.tsx:167` | `?? 1` |
+| `advanceSettings.shared.ts:158` | `?? 1` |
+ 
+> **Note:** Existing agents with an explicitly saved `ignore_interruption_turns: 0` keep their value. Only new agents and configs missing the field get the new default.
+ 
+---
+ 
+### 5. Consolidated Migration `c4d5e6f7a8b9` + Production Data Fixes
+ 
+After discovering the per-provider settings issue, three separate migrations were initially created (`c4d5e6f7a8b9`, `d5e6f7a8b9c0`, `e6f7a8b9c0d1`). These were consolidated into a single migration to reduce complexity.
+ 
+**What the single migration does (in one pass):**
+ 
+**Part 1 — Catalog:** Per-model `settings` JSONB for all `llm_models` and `tts_models` rows.
+ 
+**Part 2 — Avatar backfill:**
+- `tts_models.avatar_url` populated by provider (from the `providers` table avatar URLs)
+- `stt_models.avatar_url` populated by language prefix (`en` → English.png, `hi` → Hindi.png, `kn` → Kannada.png, `ta` → Tamil.png, `te` → telugu.png)
+**Part 3 — Agent data fixes (discovered via diagnostic queries on prod DB):**
+ 
+A full audit of the `agents` table revealed several classes of config bleed beyond the Sarvam/nova-3 incident. Queries run, findings, and fixes:
+ 
+| Class | Count | Pattern | Fix |
+|-------|-------|---------|-----|
+| ElevenLabs speed out-of-range | 154 agents | Primary `tts_config.speed` outside `[0.7, 1.2]` | Clamped to model's allowed range |
+| STT cross-provider bleed | 4 entries | `provider=sarvam, model=nova-3` and similar in primary + fallbacks | `model` reset to `"default"` |
+| LLM provider mismatch | 49 agents | `provider=azure, model_id=gpt-4o-mini` — OpenAI's catalog row resolves at runtime; agents were silently running on OpenAI | `provider` corrected to `openai` (no behavior change, honest config) |
+| TTS orphan `model_id` | 35 agents | Five patterns: voice-id stored as model_id, provider name as model_id, UUID as model_id, legacy model name | Mapped to correct canonical `model_id` |
+ 
+**TTS orphan mapping:**
+ 
+| Provider | Bad `model_id` | Correct `model_id` | Count |
+|----------|---------------|-------------------|-------|
+| azure | `hi-IN-AartiNeural` | `default_azure` | 15 |
+| cartesia | `cartesia` | `sonic-2` | 11 |
+| sarvam | `sarvam-bulbul-v2` | `bulbul:v2` | 7 |
+| elevenlabs | `d428ef60-be0d-4111-8781-9d76b8d43dff` (UUID) | `eleven_multilingual_v2` | 1 |
+| google | `google_neural2_a_female` | `google` | 1 |
+ 
+**Deployment on stage:**
+ 
+The stage DB had the schema from `b3c4d5e6f7a8` applied manually (out-of-band) without recording it in `alembic_version`. To reconcile:
+1. `INSERT INTO alembic_version VALUES ('b3c4d5e6f7a8')` — stamped existing state
+2. Changed `down_revision` of `c4d5e6f7a8b9` to `('a1c4f92b7e31', 'b3c4d5e6f7a8')` — made it a merge revision
+3. `alembic upgrade head` — ran cleanly, collapsed two heads into one
+**Dry-run verified before committing.** All row counts matched expectations.
+ 
+**Commit messages:**
+- `revrag-core`: `fix(models): per-model LLM/TTS settings, avatar backfill, clamp legacy agent configs (migration c4d5e6f7a8b9)`
+- `revrag-ui`: `feat(fallbacks): expose TTS style/loudness sliders and bump ignore_interruption_turns default to 1`
